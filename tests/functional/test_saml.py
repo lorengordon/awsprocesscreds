@@ -1,4 +1,3 @@
-import sys
 import mock
 import json
 import logging
@@ -24,90 +23,555 @@ def argv():
     ]
 
 
-def test_get_response():
+@mock.patch(
+    'awsprocesscreds.saml.OktaAuthenticator.obtain_input',
+    return_value="",
+    autospec=True
+)
+def test_get_response_1(mock_obtain_input):
     authenticator = OktaAuthenticator(None)
-    if sys.version_info >= (3, 0):
-        ips = "builtins.input"
-    else:
-        ips = "__builtin__.raw_input"
-
-    with mock.patch(ips, return_value=""):
-        with pytest.raises(SAMLError):
-            authenticator.get_response("")
-    with mock.patch(ips, return_value="fake input"):
-        response = authenticator.get_response("")
-        assert response == "fake input"
+    with pytest.raises(SAMLError):
+        authenticator.get_response("")
 
 
-def test_get_assertion_from_response(mock_requests_session, assertion):
+@mock.patch(
+    'awsprocesscreds.saml.OktaAuthenticator.obtain_input',
+    return_value="mock_result",
+    autospec=True
+)
+def test_get_response_2(mock_obtain_input):
     authenticator = OktaAuthenticator(None)
+    response = authenticator.get_response("")
+    assert response == "mock_result"
+
+
+def test_process_mfa_totp(
+        mock_requests_session, prompter, assertion, capsys):
+    session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode()
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.obtain_input",
+            return_value="12345678"):
+        result = authenticator._authenticator.process_mfa_totp(
+            "endpoint", "url", "statetoken")
+        assert result == assertion.decode()
+
+
+def test_process_mfa_push_1(
+        mock_requests_session, prompter, assertion, capsys):
+    session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode()
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+
+    result = authenticator._authenticator.process_mfa_push(
+        "endpoint", "url", "statetoken")
+    assert result == assertion.decode()
+
+
+def test_process_mfa_push_2(
+        mock_requests_session, prompter, assertion, capsys):
     session_token = {
-        'sessionToken': '1234',
+        'sessionToken': 'spam',
+        'status': 'CANCELLED',
+        'factorResult': 'FAILED'
     }
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    mock_requests_session.post.return_value = token_response
+
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+
+    with pytest.raises(SAMLError):
+        authenticator._authenticator.process_mfa_push(
+            "endpoint", "url", "statetoken")
+
+
+def test_process_mfa_security_question(
+        mock_requests_session, prompter, assertion, capsys):
+    session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode()
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.get_response",
+            return_value="security_answer"):
+        result = authenticator._authenticator.process_mfa_security_question(
+            "endpoint", "url", "statetoken")
+        assert result == assertion.decode()
+
+
+def test_verify_sms_factor(
+        mock_requests_session, prompter, assertion, capsys):
+    session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    mock_requests_session.post.return_value = token_response
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+    result = authenticator._authenticator.verify_sms_factor(
+        "url", "statetoken", "passcode")
+    assert result.status_code == 200
+    test = json.loads(result.text)
+    assert test["status"] == "SUCCESS"
+
+
+def test_process_mfa_sms(
+        mock_requests_session, prompter, assertion, capsys):
+    session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
+    token_response = mock.Mock(
+        spec=requests.Response,
+        status_code=200,
+        text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode()
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.get_response",
+            return_value="12345678"):
+        with mock.patch(
+                "awsprocesscreds.saml.OktaAuthenticator.verify_sms_factor",
+                return_value=token_response):
+            result = authenticator._authenticator.process_mfa_sms(
+                "endpoint", "url", "statetoken")
+            assert result == assertion.decode()
+
+
+def test_display_mfa_choices(
+        mock_requests_session, prompter, assertion, capsys):
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "token",
+                    "provider": "OKTA"
+                },
+                {
+                    "factorType": "token:software:totp",
+                    "provider": "OKTA"
+                },
+                {
+                    "factorType": "sms"
+                },
+                {
+                    "factorType": "push"
+                },
+                {
+                    "factorType": "question"
+                },
+                {
+                    "factorType": "blackboard",
+                    "provider": "classroom"
+                }
+            ]
+        }
+    }
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=prompter)
+    index, prompt = authenticator._authenticator.display_mfa_choices(parsed)
+    assert index == 7
+    assert prompt == (
+        "1: OKTA token\r\n"
+        "2: OKTA authenticator app\r\n"
+        "3: SMS text message\r\n"
+        "4: Push notification\r\n"
+        "5: Security question\r\n"
+        "6: classroom blackboard\r\n"
+    )
+
+
+def test_get_mfa_choice(
+        mock_requests_session, prompter, assertion, capsys):
+    def mock_prompter(prompt):
+        assert prompt == (
+            "Please choose from the following authentication choices:\r\n"
+            "1: SMS text message\r\n"
+            "Enter the number corresponding to your choice or press RETURN to "
+            "cancel authentication: "
+        )
+        return "1"
+
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "sms"
+                }
+            ]
+        }
+    }
+    authenticator = SAMLCredentialFetcher(
+        client_creator=None,
+        saml_config=None,
+        provider_name="okta",
+        password_prompter=mock_prompter)
+    response = authenticator._authenticator.get_mfa_choice(parsed)
+    assert response == 1
+
+
+def test_process_mfa_verification_1():
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "unsupported",
+                    "_links": {
+                        "verify": {
+                            "href": "href"
+                        }
+                    }
+                },
+                {
+                    "factorType": "unsupported"
+                }
+            ]
+        },
+        "stateToken": "statetoken"
+    }
+    authenticator = OktaAuthenticator(None)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.get_mfa_choice",
+            return_value=1):
+        with pytest.raises(SAMLError):
+            authenticator.process_mfa_verification("endpoint", parsed)
+
+
+def test_process_mfa_verification_2():
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "token:software:totp",
+                    "_links": {
+                        "verify": {
+                            "href": "href"
+                        }
+                    }
+                }
+            ]
+        },
+        "stateToken": "statetoken"
+    }
+    authenticator = OktaAuthenticator(None)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.process_mfa_totp",
+            return_value="mock_call"):
+        result = authenticator.process_mfa_verification("endpoint", parsed)
+        assert result == "mock_call"
+
+
+def test_process_mfa_verification_3():
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "push",
+                    "_links": {
+                        "verify": {
+                            "href": "href"
+                        }
+                    }
+                }
+            ]
+        },
+        "stateToken": "statetoken"
+    }
+    authenticator = OktaAuthenticator(None)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.process_mfa_push",
+            return_value="mock_call"):
+        result = authenticator.process_mfa_verification("endpoint", parsed)
+        assert result == "mock_call"
+
+
+def test_process_mfa_verification_4():
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "question",
+                    "_links": {
+                        "verify": {
+                            "href": "href"
+                        }
+                    }
+                }
+            ]
+        },
+        "stateToken": "statetoken"
+    }
+    authenticator = OktaAuthenticator(None)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator."
+            "process_mfa_security_question",
+            return_value="mock_call"):
+        result = authenticator.process_mfa_verification("endpoint", parsed)
+        assert result == "mock_call"
+
+
+def test_process_mfa_verification_5():
+    parsed = {
+        "_embedded": {
+            "factors": [
+                {
+                    "factorType": "sms",
+                    "_links": {
+                        "verify": {
+                            "href": "href"
+                        }
+                    }
+                }
+            ]
+        },
+        "stateToken": "statetoken"
+    }
+    authenticator = OktaAuthenticator(None)
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.process_mfa_sms",
+            return_value="mock_call"):
+        result = authenticator.process_mfa_verification("endpoint", parsed)
+        assert result == "mock_call"
+
+
+def test_retrieve_saml_assertion_1(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, cache_dir):
+    session_token = {
+        'sessionToken': 'spam',
+        'status': 'FAILED',
+        'errorSummary': 'Testing failure'
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=401, text=json.dumps(session_token)
+    )
     assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
     assertion_form = assertion_form % assertion.decode('ascii')
     assertion_response = mock.Mock(
         spec=requests.Response, status_code=200, text=assertion_form
     )
+
+    mock_requests_session.post.return_value = token_response
     mock_requests_session.get.return_value = assertion_response
-    result = authenticator.get_assertion_from_response(
-        "endpoint", session_token)
-    assert result == assertion
+    with pytest.raises(SAMLError):
+        saml(argv=argv, prompter=prompter, client_creator=client_creator,
+             cache_dir=cache_dir)
 
 
-# def test_process_mfa_totp(
-#         mock_requests_session, prompter, assertion, capsys):
-#     authenticator = SAMLCredentialFetcher(
-#         client_creator=None,
-#         provider_name="okta",
-#         saml_config=None,
-#         password_prompter=prompter)
-#     if sys.version_info >= (3, 0):
-#         ips = "builtins.input"
-#     else:
-#         ips = "__builtin__.raw_input"
-#     session_token = {'sessionToken': 'spam', 'status': 'SUCCESS'}
-#     token_response = mock.Mock(
-#         spec=requests.Response,
-#         status_code=200,
-#         text=json.dumps(session_token)
-#     )
-#     assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
-#     assertion_form = assertion_form % assertion.decode('ascii')
-#     assertion_response = mock.Mock(
-#         spec=requests.Response, status_code=200, text=assertion_form
-#     )
+def test_retrieve_saml_assertion_2(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, cache_dir):
+    session_token = {
+        'sessionToken': 'spam',
+        'status': 'LOCKED_OUT',
+        '_links': {
+            'href': 'href'
+        }
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode('ascii')
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
 
-#     mock_requests_session.post.return_value = token_response
-#     mock_requests_session.get.return_value = assertion_response
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+    with pytest.raises(SAMLError):
+        saml(argv=argv, prompter=prompter, client_creator=client_creator,
+             cache_dir=cache_dir)
 
-#     with mock.patch("getpass.getpass", return_value="12345678"):
-#         with mock.patch(ips, return_value="12345678"):
-#             result = authenticator._authenticator.process_mfa_totp(
-#                 "endpoint", "url", "statetoken")
-#             assert result == assertion
 
-#     # Now test the handling of a 400 error code
-#     error_response = {
-#         "errorCauses": [
-#             {
-#                 "errorSummary": "errorSummary"
-#             }
-#         ]
-#     }
-#     token_response = mock.Mock(
-#         spec=requests.Response,
-#         status_code=400,
-#         text=json.dumps(error_response)
-#     )
-#     mock_requests_session.post.return_value = token_response
-#     with mock.patch("getpass.getpass", return_value="12345678"):
-#         with mock.patch(ips, return_value="12345678"):
-#             result = authenticator._authenticator.process_mfa_totp(
-#                 "endpoint", "url", "statetoken")
-#             stdout, _ = capsys.readouterr()
-#             assert stdout.endswith('\n')
-#             assert result == assertion
+def test_retrieve_saml_assertion_3(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, cache_dir):
+    session_token = {
+        'sessionToken': 'spam',
+        'status': 'PASSWORD_EXPIRED',
+        '_links': {
+            'href': 'href'
+        }
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode('ascii')
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+    with pytest.raises(SAMLError):
+        saml(argv=argv, prompter=prompter, client_creator=client_creator,
+             cache_dir=cache_dir)
+
+
+def test_retrieve_saml_assertion_4(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, cache_dir):
+    session_token = {
+        'sessionToken': 'spam',
+        'status': 'MFA_ENROLL'
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode('ascii')
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+    with pytest.raises(SAMLError):
+        saml(argv=argv, prompter=prompter, client_creator=client_creator,
+             cache_dir=cache_dir)
+
+
+def test_retrieve_saml_assertion_5(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, capsys, cache_dir):
+    session_token = {
+        'sessionToken': 'spam',
+        'status': 'MFA_REQUIRED'
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode('ascii')
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+
+    with mock.patch(
+            "awsprocesscreds.saml.OktaAuthenticator.process_mfa_verification",
+            return_value=assertion):
+        saml(argv=argv, prompter=prompter,
+             client_creator=client_creator,
+             cache_dir=cache_dir)
+
+        stdout, _ = capsys.readouterr()
+        assert stdout.endswith('\n')
+
+        response = json.loads(stdout)
+        expected_response = {
+            "AccessKeyId": "foo",
+            "SecretAccessKey": "bar",
+            "SessionToken": "baz",
+            "Expiration": mock.ANY,
+            "Version": 1
+        }
+        assert response == expected_response
+
+
+def test_retrieve_saml_assertion_6(
+        mock_requests_session, argv, prompter, assertion,
+        client_creator, cache_dir):
+    session_token = {
+        'sessionToken': 'spam'
+    }
+    token_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=json.dumps(session_token)
+    )
+    assertion_form = '<form><input name="SAMLResponse" value="%s"/></form>'
+    assertion_form = assertion_form % assertion.decode('ascii')
+    assertion_response = mock.Mock(
+        spec=requests.Response, status_code=200, text=assertion_form
+    )
+
+    mock_requests_session.post.return_value = token_response
+    mock_requests_session.get.return_value = assertion_response
+    with pytest.raises(SAMLError):
+        saml(argv=argv, prompter=prompter, client_creator=client_creator,
+             cache_dir=cache_dir)
 
 
 def test_cli(mock_requests_session, argv, prompter, assertion, client_creator,

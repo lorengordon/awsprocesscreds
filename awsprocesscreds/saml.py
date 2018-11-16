@@ -1,5 +1,4 @@
 from __future__ import print_function
-import sys
 import base64
 import getpass
 import logging
@@ -248,13 +247,11 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
         "'RESEND' to get new code sent): "
     )
 
-    def __obtain_input(self, text):
-        if sys.version_info >= (3, 0):
-            return input(text)
-        return raw_input(text)  # noqa
+    def obtain_input(self, text):
+        return input(text)
 
     def get_response(self, prompt):
-        response = self.__obtain_input(prompt)
+        response = self.obtain_input(prompt)
         if response == "":
             raise SAMLError(self._ERROR_AUTH_CANCELLED)
         return response
