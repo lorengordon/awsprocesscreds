@@ -7,7 +7,6 @@ from hashlib import sha1
 from copy import deepcopy
 
 import six
-from six.moves import input
 import requests
 import botocore
 from botocore.client import Config
@@ -243,16 +242,13 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
     )
 
     _MSG_SMS_CODE = (
-        "Authentication code (RETURN to cancel, "
+        "SMS authentication code (RETURN to cancel, "
         "'RESEND' to get new code sent): "
     )
 
-    def obtain_input(self, text):
-        return input(text)
-
-    def get_response(self, prompt):
-        response = self.obtain_input(prompt)
-        if response == "":
+    def get_response(self, prompt, allow_cancel=True):
+        response = self._password_prompter(prompt)
+        if allow_cancel and response == "":
             raise SAMLError(self._ERROR_AUTH_CANCELLED)
         return response
 
@@ -269,6 +265,16 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
         )
         return r
 
+    def process_response(self, response, endpoint):
+        parsed = json.loads(response.text)
+        if response.status_code == 200:
+            return self.get_assertion_from_response(endpoint, parsed)
+        elif response.status_code >= 400:
+            error = parsed["errorCauses"][0]["errorSummary"]
+            self.get_response("%s\r\nPress RETURN to continue\r\n"
+                              % error, False)
+        return None
+
     def process_mfa_totp(self, endpoint, url, statetoken):
         while True:
             response = self.get_response(self._MSG_AUTH_CODE)
@@ -279,17 +285,13 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
                 data=json.dumps({'stateToken': statetoken,
                                  'passCode': response})
             )
-            totp_parsed = json.loads(totp_response.text)
-            if totp_response.status_code == 200:
-                return self.get_assertion_from_response(endpoint, totp_parsed)
-            elif totp_response.status_code >= 400:
-                error = totp_parsed["errorCauses"][0]["errorSummary"]
-                self._password_prompter("%s\r\nPress RETURN to continue\r\n"
-                                        % error)
+            result = self.process_response(totp_response, endpoint)
+            if result is not None:
+                return result
 
     def process_mfa_push(self, endpoint, url, statetoken):
-        self._password_prompter(("Waiting for result of push notification ..."
-                                 "press RETURN to continue"))
+        self.get_response(("Press RETURN when you are ready to request the "
+                           "push notification"), False)
         while True:
             totp_response = self._requests_session.post(
                 url,
@@ -313,13 +315,9 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
                 data=json.dumps({'stateToken': statetoken,
                                  'answer': response})
             )
-            totp_parsed = json.loads(totp_response.text)
-            if totp_response.status_code == 200:
-                return self.get_assertion_from_response(endpoint, totp_parsed)
-            elif totp_response.status_code >= 400:
-                error = totp_parsed["errorCauses"][0]["errorSummary"]
-                self._password_prompter("%s\r\nPress RETURN to continue\r\n"
-                                        % error)
+            result = self.process_response(totp_response, endpoint)
+            if result is not None:
+                return result
 
     def verify_sms_factor(self, url, statetoken, passcode):
         body = {'stateToken': statetoken}
@@ -334,26 +332,20 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
 
     def process_mfa_sms(self, endpoint, url, statetoken):
         # Need to trigger the initial code to be sent ...
-        self._password_prompter(("Requesting code to be sent to your phone ..."
-                                 " press RETURN to continue"))
         self.verify_sms_factor(url, statetoken, "")
         while True:
             response = self.get_response(self._MSG_SMS_CODE)
+            # If the user has asked for the code to be resent, clear
+            # the response to retrigger sending the code.
             if response == "RESEND":
                 response = ""
             sms_response = self.verify_sms_factor(url, statetoken, response)
             # If we've just requested a resend, don't check the result
             # - just loop around to get the next response from the user.
             if response != "":
-                sms_parsed = json.loads(sms_response.text)
-                if sms_response.status_code == 200:
-                    return self.get_assertion_from_response(endpoint,
-                                                            sms_parsed)
-                elif sms_response.status_code >= 400:
-                    error = sms_parsed["errorCauses"][0]["errorSummary"]
-                    self._password_prompter(("%s\r\n"
-                                             "Press RETURN to continue\r\n")
-                                            % error)
+                result = self.process_response(sms_response, endpoint)
+                if result is not None:
+                    return result
 
     def display_mfa_choices(self, parsed):
         index = 1
@@ -377,19 +369,23 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
             index += 1
         return index, prompt
 
+    def get_number(self, prompt):
+        response = self.get_response(prompt)
+        choice = 0
+        try:
+            choice = int(response)
+        except ValueError:
+            pass
+        return choice
+
     def get_mfa_choice(self, parsed):
+        count, prompt = self.display_mfa_choices(parsed)
+        prompt = ("Please choose from the following authentication"
+                  " choices:\r\n") + prompt
+        prompt += ("Enter the number corresponding to your choice "
+                   "or press RETURN to cancel authentication: ")
         while True:
-            count, prompt = self.display_mfa_choices(parsed)
-            prompt = ("Please choose from the following authentication"
-                      " choices:\r\n") + prompt
-            prompt += ("Enter the number corresponding to your choice "
-                       "or press RETURN to cancel authentication: ")
-            response = self._password_prompter(prompt)
-            choice = 0
-            try:
-                choice = int(response)
-            except ValueError:
-                pass
+            choice = self.get_number(prompt)
             if choice > 0 and choice < count:
                 return choice
 
