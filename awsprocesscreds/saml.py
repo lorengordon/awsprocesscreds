@@ -270,7 +270,7 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
         parsed = json.loads(response.text)
         if response.status_code == 200:
             return self.get_assertion_from_response(endpoint, parsed)
-        elif response.status_code >= 400:
+        if response.status_code >= 400:
             error = parsed["errorCauses"][0]["errorSummary"]
             self.get_response("%s\r\nPress RETURN to continue\r\n"
                               % error, False)
@@ -303,7 +303,7 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
             totp_parsed = json.loads(totp_response.text)
             if totp_parsed["status"] == "SUCCESS":
                 return self.get_assertion_from_response(endpoint, totp_parsed)
-            elif totp_parsed["factorResult"] != "WAITING":
+            if totp_parsed["factorResult"] != "WAITING":
                 raise SAMLError(self._ERROR_AUTH_CANCELLED)
 
     def process_mfa_security_question(self, endpoint, url, statetoken):
@@ -387,7 +387,7 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
                    "or press RETURN to cancel authentication: ")
         while True:
             choice = self.get_number(prompt)
-            if choice > 0 and choice < count:
+            if 0 < choice < count:
                 return choice
 
     def process_mfa_verification(self, endpoint, parsed):
@@ -401,15 +401,15 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
         statetoken = parsed["stateToken"]
         if factor["factorType"] == "token:software:totp":
             return self.process_mfa_totp(endpoint, url, statetoken)
-        elif factor["factorType"] == "push":
+        if factor["factorType"] == "push":
             return self.process_mfa_push(endpoint, url, statetoken)
-        elif factor["factorType"] == "question":
+        if factor["factorType"] == "question":
             return self.process_mfa_security_question(endpoint,
                                                       url, statetoken)
-        elif factor["factorType"] == "sms":
+        if factor["factorType"] == "sms":
             return self.process_mfa_sms(endpoint, url, statetoken)
-        else:
-            raise SAMLError("Unsupported factor")
+
+        raise SAMLError("Unsupported factor")
 
     def retrieve_saml_assertion(self, config):
         self._validate_config_values(config)
@@ -440,15 +440,15 @@ class OktaAuthenticator(GenericFormsBasedAuthenticator):
         if "status" in parsed:
             if parsed["status"] == "SUCCESS":
                 return self.get_assertion_from_response(endpoint, parsed)
-            elif parsed["status"] == "LOCKED_OUT":
+            if parsed["status"] == "LOCKED_OUT":
                 raise SAMLError(self._ERROR_LOCKED_OUT %
                                 parsed["_links"]["href"])
-            elif parsed["status"] == "PASSWORD_EXPIRED":
+            if parsed["status"] == "PASSWORD_EXPIRED":
                 raise SAMLError(self._ERROR_PASSWORD_EXPIRED %
                                 parsed["_links"]["href"])
-            elif parsed["status"] == "MFA_ENROLL":
+            if parsed["status"] == "MFA_ENROLL":
                 raise SAMLError(self._ERROR_MFA_ENROLL)
-            elif parsed["status"] == "MFA_REQUIRED":
+            if parsed["status"] == "MFA_REQUIRED":
                 return self.process_mfa_verification(endpoint, parsed)
         raise SAMLError("Code logic failure")
 
